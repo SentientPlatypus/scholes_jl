@@ -7,57 +7,54 @@
 # - Action: a = [a_call, a_put] ∈ [-1,1]^2 (target positions, scaled by capital)
 # - Reward: log-wealth; small Γ/Vega penalty; costs & spread included
 
-module OptionsEnv
-
 using Statistics, Distributions
 
-# -------- Black–Scholes utilities --------
-const SQRT2 = sqrt(2.0)
-Φ(x) = 0.5 * (1 + erf(x / SQRT2))
 
-# d1 helper
-@inline function bs_d1(S, K, r, q, σ, τ)
+function bs_d1(S, K, r, q, σ, τ)
     (log(S / K) + (r - q + 0.5 * σ^2) * τ) / (σ * sqrt(τ))
 end
 
-# European call/put prices (per-share)
+
 function bs_prices(S, K, r, q, σ, τ)
-    if τ <= 0 || σ <= 0
+    if τ <= 0 || σ <= 0 #If the time is expired, or there is no volatility (σ)
         C = max(S - K, 0.0)
         P = max(K - S, 0.0)
         return C, P
     end
+
     d1 = bs_d1(S, K, r, q, σ, τ)
     d2 = d1 - σ * sqrt(τ)
+
     Nd1 = cdf(Normal(), d1)
     Nd2 = cdf(Normal(), d2)
+
     e_qτ = exp(-q * τ)
     e_rτ = exp(-r * τ)
+
     C = S * e_qτ * Nd1 - K * e_rτ * Nd2
     P = C - S * e_qτ + K * e_rτ   # via put-call parity
     return C, P
 end
 
 # Greeks (per-share): Δcall, Δput, Γ, Vega (dPrice/dVol, vol in absolute units)
-function bs_greeks(S, K, r, q, σ, τ)
-    if τ <= 0 || σ <= 0
+function greeks(S, K, r, q, σ, τ)
+    if τ <= 0 || σ <= 0 #If the time is expired, or there is no volatility (σ)
         Δc = (S > K) ? 1.0 : 0.0
         Δp = Δc - 1.0
         Γ  = 0.0
         V  = 0.0
         return Δc, Δp, Γ, V
     end
+
     d1    = bs_d1(S, K, r, q, σ, τ)
-    ϕd1   = pdf(Normal(), d1)
-    e_qτ  = exp(-q * τ)
-    Δc    = e_qτ * cdf(Normal(), d1)
+
+    Δc    = e_qτ * cdf(Normal(), d1)  #δC/δS
     Δp    = Δc - e_qτ
-    Γ     = e_qτ * ϕd1 / (S * σ * sqrt(τ))
-    Vega  = S * e_qτ * ϕd1 * sqrt(τ)
+    Γ     = e_qτ * ϕd1 / (S * σ * sqrt(τ)) #δ^2C/δS^2
+    Vega  = S * e_qτ * ϕd1 * sqrt(τ) # δC/δσ
     return Δc, Δp, Γ, Vega
 end
 
-# -------- Environment --------
 mutable struct Env
     # Market / data
     day_df            # DataFrame of features (for this "day session")
@@ -70,12 +67,12 @@ mutable struct Env
     q::Float64
 
     # Option chain (single expiry rolling ATM)
-    T_steps::Int
+    T_steps::Int #Expiry time (21 days)
     steps_left::Int
-    K::Float64
-    sigma::Float64
-    vol_win::Int
-    realized_ret::Vector{Float64}
+    K::Float64 #Strike price
+    σ::Float64 #volatility estimation
+    vol_win::Int # window length for realized vol estimate.
+    realized_ret::Vector{Float64} #returns for estimating σ
 
     # Portfolio / accounting
     capital::Float64
@@ -106,7 +103,7 @@ function reset!(env::Env)
     env.t = env.lookback
     env.S = env.S0
     env.K = env.S0
-    env.sigma = 0.2
+    env.σ = 0.2
     env.steps_left = env.T_steps
     empty!(env.realized_ret)
     env.capital = 1000.0
@@ -115,30 +112,22 @@ function reset!(env::Env)
     return
 end
 
-# Rolling realized vol -> annualized, as proxy for IV
-function update_sigma!(env::Env)
+function update_σ!(env::Env)
     if length(env.realized_ret) < env.vol_win
         return
     end
     σp   = std(env.realized_ret[end-env.vol_win+1:end]) / 100.0
     σann = clamp(σp * sqrt(252.0), 0.05, 1.0)
-    env.sigma = σann
+    env.σ = σann
 end
 
-# Relist a new ATM chain at expiry
-function roll_chain!(env::Env)
-    env.steps_left = env.T_steps
-    env.K = env.S
-end
-
-# Flatten state vector
 function flatten_window(df, t, L)
     vcat([df[!, c][t-L+1:t] for c in names(df)]...)
 end
 
 function state(env::Env, feat_window::Vector{Float64})
     τ = max(env.steps_left, 1) / 252.0
-    Δc, Δp, Γ, V = bs_greeks(env.S, env.K, env.r, env.q, env.sigma, τ)
+    ΔC, ΔP, Γ, V = greeks(env.S, env.K, env.r, env.q, env.σ, τ)
     portΔ = env.n_call * Δc + env.n_put * Δp
     portΓ = (env.n_call + env.n_put) * Γ
     portV = (env.n_call + env.n_put) * V
@@ -149,62 +138,63 @@ function state(env::Env, feat_window::Vector{Float64})
     )
 end
 
-# One step with action a = (a_call, a_put) ∈ [-1,1]^2
-# Returns: reward::Float64, done::Bool
-function step!(env::Env, a::NTuple{2,Float64})
+
+function step!(env::Env, a::NTuple{2, Float64})
     a_call, a_put = a
 
-    # Map actions -> target contract counts (scaled by capital & spot)
+    # Scale contract counts.
     max_contr = env.alloc_scale * env.capital / max(env.contract_size * env.S, 1e-9)
-    target_call = clamp(a_call * max_contr, -max_contr, max_contr)
-    target_put  = clamp(a_put  * max_contr, -max_contr, max_contr)
+    target_call = clamp(a_call * max_contr, -max_contr, max_contr) #target # of calls
+    target_put  = clamp(a_put  * max_contr, -max_contr, max_contr) #target # of puts
 
-    # Current option prices (pre-move)
+    #pre move options prices.
     τ   = max(env.steps_left, 1) / 252.0
     C, P = bs_prices(env.S, env.K, env.r, env.q, env.sigma, τ)
 
-    # Trade deltas & costs
-    Δc = target_call - env.n_call
-    Δp = target_put  - env.n_put
-    traded_prem = (abs(Δc)*C + abs(Δp)*P) * env.contract_size
+    ΔC = target_call - env.n_call
+    ΔP = target_put - env.n_put
+
+    traded_premium = (abs(ΔC) * C + abs(ΔP) * P) * env.contract_size 
     cost   = env.tx_cost_rate * traded_prem
     spread = env.spread_rate  * traded_prem
-    cash_flow = (Δc*C + Δp*P) * env.contract_size + cost + spread
-    env.capital -= cash_flow
-    env.n_call += Δc
-    env.n_put  += Δp
 
-    # Evolve to next spot using your percent change series
+    cash_flow = (ΔC*C + ΔP*P) * env.contract_size + cost + spread #total cost of this move
+    env.capital -= cash_flow
+    env.n_call += ΔC
+    env.n_put  += ΔP
+
+    #move to next time step.
     idx = env.t + 1
     if idx > length(env.day_change)
-        # episode over
+        #episode is over
         return 0.0, true
     end
-    r_pct = env.day_change[idx] / 100.0
-    env.S *= (1 + r_pct)
-    push!(env.realized_ret, env.day_change[idx])
+
+    r_pct = env.day_change[idx]
+    env.S *= (1 + r_pct / 100.0)
+
+    push!(env.realized_ret, env.day_change[idx]) #add return to experience
     if length(env.realized_ret) > 200
         popfirst!(env.realized_ret)
     end
-    update_sigma!(env)
+    update_σ!(env) #update volatility
 
-    env.steps_left -= 1
-
-    # Mark-to-market
+    env.steps_left -=1
     τ′ = max(env.steps_left, 0) / 252.0
-    C′, P′ = bs_prices(env.S, env.K, env.r, env.q, env.sigma, τ′)
     opt_value = (env.n_call*C′ + env.n_put*P′) * env.contract_size
     prev_opt_val = (env.n_call*C  + env.n_put*P ) * env.contract_size
+
     # Approx prev equity = (pre-trade cash + trade cash) + prev_opt_val
     prev_equity = (env.capital + cash_flow) + prev_opt_val
-    equity      = env.capital + opt_value
-    rw = log(max(equity, 1e-9) / max(prev_equity, 1e-9))
+    equity = env.capital + opt_value #lost the cash flow, but now have option value
 
-    # Risk penalties
+    rw = log(max(equity, 1e-9) / max(prev_equity, 1e-9)) #percent reward
+
+    # Risk penalties. Recompute greeks at new state, penalize convexity Γ and sensitivity Vega, to avoid unstable exposure
     Δc_g, Δp_g, Γ, V = bs_greeks(env.S, env.K, env.r, env.q, env.sigma, max(τ′, 1e-9))
     portΓ = (env.n_call + env.n_put) * Γ
     portV = (env.n_call + env.n_put) * V
-    reward = rw - env.λΓ * abs(portΓ) - env.λV * abs(portV)
+    reward = rw - env.λΓ * abs(portΓ) - env.λV * abs(portV) #subtract from reward per weights.
 
     # Expiry handling: settle intrinsic, relist
     if env.steps_left <= 0
@@ -212,14 +202,13 @@ function step!(env::Env, a::NTuple{2,Float64})
         env.capital += (env.n_call*Cexp + env.n_put*Pexp) * env.contract_size
         env.n_call = 0.0
         env.n_put  = 0.0
-        roll_chain!(env)
+        
+        #roll chain
+        env.steps_left = env.T_steps
+        env.K = env.S
     end
 
     env.t += 1
     done = false
     return reward, done
 end
-
-export Env, reset!, state, step!, flatten_window
-
-end # module

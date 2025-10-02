@@ -1,9 +1,9 @@
 # train_options_td3.jl
 using Random, Statistics, Plots
-include("../../nn.jl")
-include("../../data.jl")
-include("options_env.jl")
-include("td3_options.jl")
+include("../nn.jl")
+include("../data.jl")
+include("../env.jl")
+include("../td3.jl")
 
 const TICKER = "MSFT"
 const LOOK_BACK_PERIOD = 30
