@@ -47,9 +47,12 @@ function greeks(S, K, r, q, σ, τ)
     end
 
     d1    = bs_d1(S, K, r, q, σ, τ)
-
+    e_qτ = exp(-q * τ)
     Δc    = e_qτ * cdf(Normal(), d1)  #δC/δS
     Δp    = Δc - e_qτ
+
+    ϕd1   = pdf(Normal(), d1)
+
     Γ     = e_qτ * ϕd1 / (S * σ * sqrt(τ)) #δ^2C/δS^2
     Vega  = S * e_qτ * ϕd1 * sqrt(τ) # δC/δσ
     return Δc, Δp, Γ, Vega
@@ -128,7 +131,7 @@ end
 function state(env::Env, feat_window::Vector{Float64})
     τ = max(env.steps_left, 1) / 252.0
     ΔC, ΔP, Γ, V = greeks(env.S, env.K, env.r, env.q, env.σ, τ)
-    portΔ = env.n_call * Δc + env.n_put * Δp
+    portΔ = env.n_call * ΔC + env.n_put * ΔP
     portΓ = (env.n_call + env.n_put) * Γ
     portV = (env.n_call + env.n_put) * V
     return vcat(
@@ -149,12 +152,12 @@ function step!(env::Env, a::NTuple{2, Float64})
 
     #pre move options prices.
     τ   = max(env.steps_left, 1) / 252.0
-    C, P = bs_prices(env.S, env.K, env.r, env.q, env.sigma, τ)
+    C, P = bs_prices(env.S, env.K, env.r, env.q, env.σ, τ)
 
     ΔC = target_call - env.n_call
     ΔP = target_put - env.n_put
 
-    traded_premium = (abs(ΔC) * C + abs(ΔP) * P) * env.contract_size 
+    traded_prem = (abs(ΔC) * C + abs(ΔP) * P) * env.contract_size 
     cost   = env.tx_cost_rate * traded_prem
     spread = env.spread_rate  * traded_prem
 
@@ -180,7 +183,10 @@ function step!(env::Env, a::NTuple{2, Float64})
     update_σ!(env) #update volatility
 
     env.steps_left -=1
+
+
     τ′ = max(env.steps_left, 0) / 252.0
+    C′, P′ = bs_prices(env.S, env.K, env.r, env.q, env.σ, τ′)
     opt_value = (env.n_call*C′ + env.n_put*P′) * env.contract_size
     prev_opt_val = (env.n_call*C  + env.n_put*P ) * env.contract_size
 
@@ -191,14 +197,14 @@ function step!(env::Env, a::NTuple{2, Float64})
     rw = log(max(equity, 1e-9) / max(prev_equity, 1e-9)) #percent reward
 
     # Risk penalties. Recompute greeks at new state, penalize convexity Γ and sensitivity Vega, to avoid unstable exposure
-    Δc_g, Δp_g, Γ, V = bs_greeks(env.S, env.K, env.r, env.q, env.sigma, max(τ′, 1e-9))
+    Δc_g, Δp_g, Γ, V = greeks(env.S, env.K, env.r, env.q, env.σ, max(τ′, 1e-9))
     portΓ = (env.n_call + env.n_put) * Γ
     portV = (env.n_call + env.n_put) * V
     reward = rw - env.λΓ * abs(portΓ) - env.λV * abs(portV) #subtract from reward per weights.
 
     # Expiry handling: settle intrinsic, relist
     if env.steps_left <= 0
-        Cexp, Pexp = bs_prices(env.S, env.K, env.r, env.q, env.sigma, 0.0)
+        Cexp, Pexp = bs_prices(env.S, env.K, env.r, env.q, env.σ, 0.0)
         env.capital += (env.n_call*Cexp + env.n_put*Pexp) * env.contract_size
         env.n_call = 0.0
         env.n_put  = 0.0

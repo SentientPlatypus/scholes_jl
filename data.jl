@@ -116,6 +116,7 @@ function get_all_features(ticker::String, LOOK_BACK_PERIOD::Int=100)
     df.ema = ema_series(ticker)[LOOK_BACK_PERIOD+1:end]  
     df.rsi = rsi_series(ticker)[LOOK_BACK_PERIOD+1:end]  
     df.bb_percentb = bb_percentb_series(ticker)[LOOK_BACK_PERIOD+1:end]
+    df.percent_change = get_historical_raw(ticker).changeClosePercent[LOOK_BACK_PERIOD+1 : end]
     
     df_standardized = deepcopy(df)
     cols_to_standardize = [:rsi, :ema]
