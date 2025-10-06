@@ -60,8 +60,8 @@ end
 
 mutable struct Env
     # Market / data
-    day_df            # DataFrame of features (for this "day session")
-    day_change::Vector{Float64}  # % changes (post lookback)
+    features            # DataFrame of features
+    price_changes::Vector{Float64}  # % changes (post lookback)
     lookback::Int
     t::Int
     S::Float64
@@ -91,12 +91,12 @@ mutable struct Env
     λV::Float64
 end
 
-function Env(day_df, day_change; lookback=30, S0=100.0, r=0.0, q=0.0,
+function Env(features, price_changes; lookback=30, start_t=30, S0=100.0, r=0.0, q=0.0,
              T_steps=21, init_capital=1000.0, vol_win=20,
              tx_cost_rate=0.0002, spread_rate=0.002,
              contract_size=100.0, alloc_scale=0.10, σ0=0.2,
              λΓ=1e-4, λV=1e-7)
-    return Env(day_df, day_change, lookback, lookback, S0, S0, r, q,
+    return Env(features, price_changes, lookback, start_t, S0, S0, r, q,
                T_steps, T_steps, S0, σ0, vol_win, Float64[],
                init_capital, 0.0, 0.0, contract_size, alloc_scale,
                tx_cost_rate, spread_rate, λΓ, λV)
@@ -168,22 +168,21 @@ function step!(env::Env, a::NTuple{2, Float64})
 
     #move to next time step.
     idx = env.t + 1
-    if idx > length(env.day_change)
+    if idx > length(env.price_changes)
         #episode is over
         return 0.0, true
     end
 
-    r_pct = env.day_change[idx]
+    r_pct = env.price_changes[idx]
     env.S *= (1 + r_pct / 100.0)
 
-    push!(env.realized_ret, env.day_change[idx]) #add return to experience
+    push!(env.realized_ret, env.price_changes[idx]) #add return to experience
     if length(env.realized_ret) > 200
         popfirst!(env.realized_ret)
     end
     update_σ!(env) #update volatility
 
     env.steps_left -=1
-
 
     τ′ = max(env.steps_left, 0) / 252.0
     C′, P′ = bs_prices(env.S, env.K, env.r, env.q, env.σ, τ′)

@@ -3,10 +3,6 @@
 # - Net returns Vector{Float64}, length 1 for critics, length act_dim for actor
 # - All targets/ops stay vector-shaped (elementwise), like your code style
 
-module TD3Vector
-
-using ..OptionsEnv  # optional if you put it under same project; remove if not needed
-
 # Bring Net/Layer/losses from your nn.jl into scope when you include this file.
 
 mutable struct TD3
@@ -103,6 +99,3 @@ function train_td3_step!(td3::TD3, α_Q::Float64, α_π::Float64, λ::Float64, b
     end
 end
 
-export TD3, add_experience!, train_td3_step!, update_target_network!
-
-end # module
