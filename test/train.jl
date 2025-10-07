@@ -1,5 +1,5 @@
 # train_options_td3_ou.jl
-using Random, Statistics, Plots
+using Random, Statistics, Plots, Dates
 include("../nn.jl")
 include("../data.jl")
 include("../option_env.jl")
@@ -20,6 +20,10 @@ const TAU        = 0.005
 const SESSION_STEPS = 300
 
 Random.seed!(SEED)
+
+
+date_str = Dates.format(now(), "yyyy-mm-dd")
+save_dir = "plots/options/$(date_str)"
 
 # ----- Load features -----
 all_features, all_prices = get_all_features(TICKER, LOOK_BACK_PERIOD)
@@ -66,11 +70,20 @@ function sample!(n::SimpleOUNoise)
     return x
 end
 
+
 ou = SimpleOUNoise(0.15, 0.0, 0.2, act_dim)
 
 # ----- Training loop -----
 episode_equity = Float64[]
 bh_equity      = Float64[]
+
+episode_total_reward = Float64[]
+episode_avg_reward   = Float64[]
+last_episode_rewards = Float64[]  # per-step rewards for the most recent episode
+
+rolling_mean(v::Vector{Float64}, w::Int) = (length(v) < w ? [mean(v[1:i]) for i in 1:length(v)]
+                                            : vcat([mean(v[1:i]) for i in 1:w-1],
+                                                   [mean(@view v[i-w+1:i]) for i in w:length(v)]))
 
 N = nrow(all_features)
 min_start = LOOK_BACK_PERIOD
@@ -79,14 +92,16 @@ max_start = max(LOOK_BACK_PERIOD, N - SESSION_STEPS - 1)
 for ep in 1:NUM_EPISODES
     t0 = rand(min_start:max_start)
     t_end = min(N, t0 + SESSION_STEPS)
+
+    println("EPISODE: $(ep)")
     sess_idx = t0-LOOK_BACK_PERIOD+1:t_end
 
     session_df = all_features[sess_idx, :]
     session_prices = all_prices[sess_idx]
 
 
-    print(session_df)
-    println(session_prices)
+    # print(session_df)
+    # println(session_prices)
 
     env = Env(session_df, session_prices; lookback=LOOK_BACK_PERIOD, start_t = t0)
     reset!(env)
@@ -95,8 +110,9 @@ for ep in 1:NUM_EPISODES
     bh_cap   = Float64[INIT_CAPITAL]
     S_ref    = 100.0
 
+    empty!(last_episode_rewards)
     while true
-        feat_window = flatten_window(session_df, env.steps_left / 252.0, LOOK_BACK_PERIOD)
+        feat_window = flatten_window(session_df, env.t, LOOK_BACK_PERIOD)
         s = state(env, feat_window)
 
         # Deterministic policy
@@ -107,6 +123,8 @@ for ep in 1:NUM_EPISODES
              clamp(a_det[2] + ε[2], -1.0, 1.0))
 
         reward, done = step!(env, a)
+        push!(last_episode_rewards, reward)
+
         s′ = done ? s : state(env, flatten_window(session_df, env.t, LOOK_BACK_PERIOD))
 
         add_experience!(td3, s, collect(a), reward, s′, done ? 1.0 : 0.0)
@@ -126,15 +144,52 @@ for ep in 1:NUM_EPISODES
 
     push!(episode_equity, capitals[end])
     push!(bh_equity, bh_cap[end])
+    push!(episode_total_reward, sum(last_episode_rewards))
+    push!(episode_avg_reward,   mean(last_episode_rewards))
 
     if ep % 10 == 0 || ep == 1
         println("Episode $ep — final equity: $(round(capitals[end], digits=2)) vs BH: $(round(bh_cap[end], digits=2))")
     end
 end
 
-mkpath("plots/options")
+mkpath(save_dir)
+
+#-------PLOTS----------------
+
+#1. EQUITY
 plt = plot(episode_equity, label="TD3 + OU (terminal equity)", xlabel="Episode",
            ylabel="Capital", lw=2, title="Options TD3 Training Performance")
 plot!(plt, bh_equity, label="Buy & Hold reference", lw=2, linestyle=:dash)
-savefig("plots/options/td3_ou_equity.png")
-println("Saved plots/options/td3_ou_equity.png")
+savefig("$(save_dir)/td3_ou_equity.png")
+
+# 1) Total reward per episode + rolling mean
+w = 20  # smoothing window (episodes)
+r_tot = episode_total_reward
+r_tot_smooth = rolling_mean(r_tot, w)
+
+plt_rtot = plot(r_tot, label="Total reward / episode", lw=1.5,
+                xlabel="Episode", ylabel="Reward",
+                title="TD3+OU — Total Reward per Episode")
+plot!(plt_rtot, r_tot_smooth, label="Rolling mean (w=$(w))", lw=3, linestyle=:dash)
+savefig("$(save_dir)/td3_rewards_total.png")
+
+# 2) Average step reward per episode + rolling mean
+r_avg = episode_avg_reward
+r_avg_smooth = rolling_mean(r_avg, w)
+
+plt_ravg = plot(r_avg, label="Avg step reward / episode", lw=1.5,
+                xlabel="Episode", ylabel="Reward",
+                title="TD3+OU — Average Step Reward per Episode")
+plot!(plt_ravg, r_avg_smooth, label="Rolling mean (w=$(w))", lw=3, linestyle=:dash)
+savefig("$(save_dir)/td3_rewards_avg.png")
+
+# 3) Per-step rewards of the last episode
+plt_rsteps = plot(last_episode_rewards, label="Reward (per step)", lw=1.5,
+                  xlabel="Step", ylabel="Reward",
+                  title="TD3+OU — Per-Step Rewards (Last Episode)")
+savefig("$(save_dir)/td3_rewards_last_episode.png")
+
+println("Saved reward plots:\n",
+        "  $(save_dir)/td3_rewards_total.png\n",
+        "  $(save_dir)/td3_rewards_avg.png\n",
+        "  $(save_dir)/td3_rewards_last_episode.png")
