@@ -31,6 +31,7 @@ function get_historical_vscores(ticker::String, OBS::Int=100, EPOCH::Int=1000, E
     raw = map(row -> Float64(row.close), eachrow(df))
 
     vscore_list = vscore(reverse(raw), OBS, EPOCH, EXT)
+    return vscore_list
 end
 
 # 2. Exponential Moving Average (EMA)
@@ -129,3 +130,4 @@ function get_all_features(ticker::String, LOOK_BACK_PERIOD::Int=100)
     day_price = get_historical_raw(ticker).changeClosePercent[LOOK_BACK_PERIOD+1 : end]
     return df_standardized, day_price
 end
+

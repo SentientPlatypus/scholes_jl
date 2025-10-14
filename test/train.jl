@@ -7,7 +7,7 @@ include("../td3.jl")
 
 const TICKER = "MSFT"
 const LOOK_BACK_PERIOD = 30
-const NUM_EPISODES     = 150
+const NUM_EPISODES     = 1500
 const INIT_CAPITAL     = 1000.0
 const SEED             = 3
 
@@ -17,7 +17,8 @@ const WEIGHT_DEC = 1e-4
 const BATCH_SIZE = 256
 const GAMMA      = 0.95
 const TAU        = 0.005
-const SESSION_STEPS = 300
+const SESSION_STEPS = 150
+const WARMUP_STEPS = 15000
 
 Random.seed!(SEED)
 
@@ -89,22 +90,31 @@ N = nrow(all_features)
 min_start = LOOK_BACK_PERIOD
 max_start = max(LOOK_BACK_PERIOD, N - SESSION_STEPS - 1)
 
+warmup_replay!(td3, all_features, all_prices;
+               lookback=LOOK_BACK_PERIOD,
+               session_steps=SESSION_STEPS,
+               warmup_steps=WARMUP_STEPS,
+               seed=SEED)
+
+@info "Warmup done. Starting training..."
 for ep in 1:NUM_EPISODES
+
     t0 = rand(min_start:max_start)
     t_end = min(N, t0 + SESSION_STEPS)
 
-    println("EPISODE: $(ep)")
+    @info "Episode $ep: session from index $t0 to $t_end (length=$(t_end - t0))"
     sess_idx = t0-LOOK_BACK_PERIOD+1:t_end
 
     session_df = all_features[sess_idx, :]
     session_prices = all_prices[sess_idx]
 
 
-    # print(session_df)
-    # println(session_prices)
 
-    env = Env(session_df, session_prices; lookback=LOOK_BACK_PERIOD, start_t = t0)
+    env = Env(session_df, session_prices; lookback=LOOK_BACK_PERIOD)
     reset!(env)
+    env.λΓ = (ep <= 500) ? 0.0 : 1e-4
+    env.λV = (ep <= 500) ? 0.0 : 1e-7
+
 
     capitals = Float64[INIT_CAPITAL]
     bh_cap   = Float64[INIT_CAPITAL]
@@ -117,8 +127,10 @@ for ep in 1:NUM_EPISODES
 
         # Deterministic policy
         a_det = td3.π_(s)
+        # println(td3.π_.output)
         # OU exploration
         ε = sample!(ou)
+        ou.σ = max(0.03, ou.σ * 0.999)   # slower decay
         a = (clamp(a_det[1] + ε[1], -1.0, 1.0),
              clamp(a_det[2] + ε[2], -1.0, 1.0))
 
