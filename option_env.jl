@@ -275,9 +275,9 @@ function step!(env::Env, a::NTuple{2, Float64})
     prev_equity = (env.capital + cash_flow) + prev_opt_val
     equity = env.capital + opt_value #lost the cash flow, but now have option value
 
-    rw = 100 * log(max(equity, 1e-9) / max(prev_equity, 1e-9)) #percent reward
+    rw = 50 * log(max(equity, 1e-9) / max(prev_equity, 1e-9)) #percent reward
     if rw <= 0
-        rw *= 2.0  #amplify negative reward to avoid bankruptcies
+        rw *= 3.0  #amplify negative reward to avoid bankruptcies
     end
 
     # Risk penalties. Recompute greeks at new state, penalize convexity Γ and sensitivity Vega, to avoid unstable exposure
