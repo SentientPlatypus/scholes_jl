@@ -6,19 +6,19 @@ include("../option_env.jl")
 include("../td3.jl")
 
 const TICKER = "MSFT"
-const LOOK_BACK_PERIOD = 30
+const LOOK_BACK_PERIOD = 90
 const NUM_EPISODES     = 1500
 const INIT_CAPITAL     = 1000.0
-const SEED             = 3
+const SEED             = 10
 
 const ACTOR_LR   = 5e-5
 const CRITIC_LR  = 3e-4
 const WEIGHT_DEC = 1e-4
 const BATCH_SIZE = 256
-const GAMMA      = 0.95
+const GAMMA      = 0.97
 const TAU        = 0.005
-const SESSION_STEPS = 150
-const WARMUP_STEPS = 15000
+const SESSION_STEPS = 21
+const WARMUP_STEPS = 50000
 
 Random.seed!(SEED)
 
@@ -72,7 +72,7 @@ function sample!(n::SimpleOUNoise)
 end
 
 
-ou = SimpleOUNoise(0.15, 0.0, 0.2, act_dim)
+ou = SimpleOUNoise(0.3, 0.0, 0.05, act_dim)
 
 # ----- Training loop -----
 episode_equity = Float64[]
